@@ -78,6 +78,9 @@ Data we included has 2 time period: 2010, 2014, with 33,018 observations in 2010
 We focus on the important variables associated with personal income: age, gender, years of education and other variables related with community characteristics such as the number of convenience stores, the number of promary schools, the number of hospitals, water source, community population, travel time to nearest town, travel time to county seat, agricultural GDP, non-agricultural GDP and income per capita. 
 
 ## Data
+
+https://ningyinxu.shinyapps.io/FinalProject/#section-whats-influencing-income
+
 ```{r}
 load("./data/data.RData")
 data <- joined %>%
@@ -235,8 +238,13 @@ rpart.plot(optree, tweak = 0.8, digits = 3)
 ```{r}
 columnname <- c("True Value", "Causal Tree")
 value <- c(0.3, round((1/300 * tree_res$n) %*% tree_res$yval, 3))
-pander(rbind(columnname, value))
+x <- rbind(columnname, value)
+row.names(x) <- NULL
+pander(x, justify = c('center', 'center'))
+```
 
+
+```{r}
 pander(forestate)
 
 ```
