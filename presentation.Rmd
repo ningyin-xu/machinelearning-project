@@ -1,0 +1,244 @@
+---
+title: "Applying Causal Tree / Causal Forest on Panel Data"
+subtitle: "China Family Panel Studies"
+author: "Ningyin Xu"
+output: 
+  ioslides_presentation:
+    widescreen: true
+    smaller: true
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(message = F,
+                      warning = F,
+                      echo = F,
+                      cache = F)
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+library(broom)
+library(stringr)
+library(modelr)
+library(forcats)
+library(tidytext)
+library(reshape2)
+library(readstata13)
+library(stargazer)
+library(gtools)
+library(pander)
+library(causalTree)
+library(ranger)
+library(grf)
+
+options(digits = 3)
+set.seed(1234)
+options(scipen=999)
+theme_set(theme_minimal())
+```
+
+
+## Contents
+
+- Introduction
+- Method
+- Data
+- Preliminary Results
+
+## Introduction
+
+Due to my research interest in applied microeconomics, causal tree and causal forest from Athey and Wager are very appealing to me. 
+
+Since Athey and Wager focused on cross sectional data in their paper, I intend to apply their method on panel data.
+
+## Method
+
+Consider the following problem:
+
+$$y_{it} = \lambda_t + \tau w_{it} + x_{it} \gamma + c_i + u_{it}$$
+where $\lambda_t$ is a full set of time effects, $w_{it}$ is the binary program indicator, $x_{it}$ are control variables, $c_i$ is an observed effect, and $u_{it}$ are the idiosyncratic errors. The parameter of interest is $\tau$, treatment effect.
+
+The assummption of unconfoundedness of treatment is that:
+$$E(y_{it}(0) | w_i, x_i, c_{i0}, c_{i1}) = E(y_{it}(0) | x_{it}, c_{i0})$$
+$$E(y_{it}(1) | w_i, x_i, c_{i0}, c_{i1}) = E(y_{it}(1) | x_{it}, c_{i0})$$
+
+## Method
+Another assumption is:
+The gain from treatment depends on time, unobserved heterogeneity, and observed covariates
+$$E(y_{it}(1) - y_{it}(0)| x_i, c_{i1}, c_{i0}) = \tau_t + a_i + (x_{it} - \xi_t)\delta$$
+where $a_i$ is a function of $(c_{i1}, c_{i0})$ normalized so $E(a_i)=0$ and $\xi_t = E(x_{it})$.
+
+With FE or FD, removing $c_i$ is standard, provided $w_{it}$ is strictly exogenous. 
+
+## Data
+
+Our main data source is China Family Panel Studies (CFPS) which is the first large-scale academically oriented longitudinal survey data in China.
+
+Data we included has 2 time period: 2010, 2014, with 33,018 observations in 2010 and 37,147 observations in 2014. After cleaning the missing variables and selecting the interested variables and merging two data by person id, we finally have sample data which has 12,237 observations with 202 variables. 
+
+We focus on the important variables associated with personal income: age, gender, years of education and other variables related with community characteristics such as the number of convenience stores, the number of promary schools, the number of hospitals, water source, community population, travel time to nearest town, travel time to county seat, agricultural GDP, non-agricultural GDP and income per capita. 
+
+## Data
+```{r}
+load("./data/data.RData")
+data <- joined %>%
+  mutate(community_2010 = as.character(community_2010),
+         community_2014 = as.character(community_2014)) %>%
+  select(pid, community_2010, community_2014,
+         income_2010, income_2014,
+         age_2010, age_2014, 
+         gender_2010, gender_2014,
+         educ_2010, educ_2014,
+         numconvenience_2010, numconvenience_2014,
+         numprimarysch_2010, numprimarysch_2014,
+         numhospital_2010, numhospital_2014,
+         watersource_2010, watersource_2014,
+         pop_2010, pop_2014, 
+         timecommittenearesttown_2010, timecommittenearesttown_2014,
+         timecommittecountycap_2010, timecommittecountycap_2014,
+         agrigdp_2010, agrigdp_2014,
+         nonagrigdp_2010, nonagrigdp_2014,
+         incpercap_2010, incpercap_2014)
+
+descrp <- data %>%
+  select(income_2010, 
+         age_2010, 
+         educ_2010,
+         agrigdp_2010,
+         nonagrigdp_2010,
+         incpercap_2010) %>%
+  mutate(income = income_2010,
+         age = age_2010, 
+         education = educ_2010,
+         agri_GDP = agrigdp_2010,
+         nonagri_GDP = nonagrigdp_2010,
+         incpercap = incpercap_2010) %>%
+  select(income,
+         age, 
+         education,
+         incpercap) %>%
+  summary()
+
+pander(descrp)
+```
+
+## Preliminary Results
+
+- Simulation Data:
+- 300 individuals
+- 2 periods
+- 6 variables
+- including fixed effect
+
+```{r, results='hide'}
+nperson <- 300 # Number of persons
+nobs <- 2      # Number of observations per person
+
+# In order for unobserved person effects to be a problem they must be
+# correlated with the explanatory variable.
+ 
+# Let's say: x = x.base + fe
+ 
+fe.sd <- 1 # Spefify the standard deviation of the fixed effed
+x.sd  <- 1 # Specify the base standard deviation of x
+ 
+beta <- 2
+ 
+# First generate our data using the time constant effects
+constantdata <- data.frame(id=1:nperson, fe=rnorm(nperson))
+ 
+# We expand our data by nobs
+fulldata <- constantdata[rep(1:nperson, each=nobs),]
+ 
+# Add a time index, first define a group apply function
+# that applies by group index.
+gapply <- function(x, group, fun) {
+  returner <- numeric(length(group))
+  for (i in unique(group)) 
+    returner[i==group] <- get("fun")(x[i==group])
+  returner
+}
+ 
+# Using the generalized apply function coded above
+fulldata$t <- gapply(rep(1,length(fulldata$id)), 
+                         group=fulldata$id, 
+                         fun=cumsum)
+
+treatid <- sample(unique(fulldata$id), 1/2 * nperson,
+       replace = FALSE)
+
+fulldata$w <- 0
+
+fulldata[fulldata$t == 2,][treatid,]$w <- 1
+
+# Now we are ready to caculate the time variant xs
+fulldata$x1 <- fulldata$fe + rnorm(nobs*nperson)
+
+fulldata$x2 <- rnorm(nobs*nperson)
+
+fulldata$x3 <- fulldata$fe + rnorm(nobs*nperson)
+
+fulldata$x4 <- rnorm(nobs*nperson)
+
+fulldata$x5 <- fulldata$fe + rnorm(nobs*nperson)
+
+fulldata$x6 <- rnorm(nobs*nperson)
+
+fulldata$lambda <- 0.5*rnorm(nobs*nperson)
+
+fulldata[fulldata$t == 2,]$lambda <- 3*rnorm(nperson)
+
+# And our unobservable error
+fulldata$u <- rnorm(nobs*nperson)
+
+# Finally we are ready to simulate our y variables
+fulldata$y <- .5*fulldata$x1 + .1*fulldata$x2 + .2*fulldata$x3 + .5*fulldata$x4 + .4*fulldata$x5 + .5*fulldata$x6 + .5*fulldata$fe + 0.3*fulldata$w + fulldata$lambda + fulldata$u
+
+diffdata <- fulldata %>%
+  group_by(id) %>%
+  mutate_at(vars(fe:y), funs(.-lag(.))) %>%
+  na.omit() %>%
+  select(w, x1, x2, x3, x4, x5, x6, y)
+
+reg <- y ~ x1 + x2 + x3 + x4 + x5 + x6
+# causal trees
+tree <- causalTree(reg, data = diffdata, treatment = diffdata$w,
+                   split.Rule = "CT", split.Honest = T,
+                   cv.option = "CT", cv.Honest = T,
+                   xval = 10, minsize = 2)
+opcp <- tree$cptable[, 1][which.min(tree$cptable[,"xerror"])]
+optree <- prune(tree, cp=opcp)
+optree_res <- optree$frame
+tree_res <- optree_res %>% filter(var=="<leaf>")
+
+# causal forest
+diffdata <- as.data.table(diffdata)
+X <- as.matrix(diffdata[,c("x1", "x2", "x3", "x4", "x5", "x6")], ncol = 6)
+Y <- as.matrix(diffdata[,y])
+W <- as.matrix(diffdata[,w])
+cf <- causal_forest(X, 
+                    Y,
+                    W,
+                    mtry = 7,
+                    min.node.size = 2,
+                    honesty = T,
+                    num.fit.trees = 5)
+forestate <- average_treatment_effect(cf, target.sample = "all")
+```
+
+## Preliminary Results
+
+```{r}
+rpart.plot(optree, tweak = 0.8, digits = 3)
+```
+
+## Preliminary Results
+```{r}
+columnname <- c("True Value", "Causal Tree")
+value <- c(0.3, round((1/300 * tree_res$n) %*% tree_res$yval, 3))
+pander(rbind(columnname, value))
+
+pander(forestate)
+
+```
+
+
